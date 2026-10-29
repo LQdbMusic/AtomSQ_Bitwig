@@ -38,5 +38,5 @@ These are covered by an MIT license, which is included for reference in the rele
 
 **This code is provided with absolutely no warranty!** I can confirm it has not bricked my Atom SQ, or caused any issues with my Bitwig installation. I cannot foresee any potential issues, but you know, just in case, use at your own risk. 
 
-## Feedback
-If you have comments on this script, feel free to let me know. I can be reached via Discord: Nova#4280
+## Thank me later :)
+If you like this short vibe coded hack and it's useful for you and your trusty Atom SQ, feel free to stream my Music: https://open.spotify.com/intl-de/artist/6TF8HOW1rI3aJ0f4nZ9aDP
