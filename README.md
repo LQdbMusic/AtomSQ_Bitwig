@@ -18,12 +18,12 @@ This controller extension provides many functions above and beyond the basic Mid
 
 ## Enhancements 2026
 1. Editor = Session View / Clip View, 8 Scenes x 8 Clips Rows
-2. in Session View =
-2a.  LEDs represent Clip-Color,
-2b.  Cursor Buttons navigate Scene / Clip Frame
-2c.  press Clip-Pad start Clip, SHIFT+Clip-Pad stops Clip
-2d.  Display: start Scenes 1-4, 5-8
-4. Device Remote Parameter (Inst) now shows in Display while tweaking for 1.5sec
+2. in Session View 
+-LEDs represent Clip-Color,
+-Cursor Buttons navigate Scene / Clip Frame
+-press Clip-Pad start Clip, SHIFT+Clip-Pad stops Clip
+-Display: start Scenes 1-4, 5-8
+3. Device Remote Parameter (Inst) now shows in Display while tweaking for 1.5sec
 
 ## Bitwig API 
 This extension was written using API version 17. but works with current Bitwig 6.x
