@@ -21,7 +21,10 @@ import com.bitwig.extension.controller.api.CursorBrowserFilterItem;
 import com.bitwig.extension.controller.api.CursorBrowserResultItem;
 import com.bitwig.extension.controller.api.CursorDeviceFollowMode;
 import com.bitwig.extension.controller.api.CursorRemoteControlsPage;
+import com.bitwig.extension.controller.api.ClipLauncherSlot;
+import com.bitwig.extension.controller.api.ClipLauncherSlotBank;
 import com.bitwig.extension.controller.api.CursorTrack;
+import com.bitwig.extension.controller.api.NoteInput;
 import com.bitwig.extension.controller.api.HardwareButton;
 import com.bitwig.extension.controller.api.HardwareControl;
 import com.bitwig.extension.controller.api.HardwareControlType;
@@ -57,6 +60,7 @@ import com.bitwig.extensions.framework.Layers;
 import com.presonus.handler.DisplayMode;
 import com.presonus.handler.HardwareHandler;
 import com.presonus.handler.DoNothing;
+import com.presonus.handler.KeyColors;
 
 public class AtomSQExtension extends ControllerExtension
 {
@@ -84,7 +88,7 @@ public class AtomSQExtension extends ControllerExtension
       mMidiOut = mHost.getMidiOutPort(0);
       mMidiIn = mHost.getMidiInPort(0);
       //HINT: Notes not playing? these values are configured for CH 10 on the midi controller, which is the default. If this is not set, close BW, then reset in the generic controller menu!
-      mMidiIn.createNoteInput (hH.DEV_NAME, hH.NOTE_ON, hH.NOTE_OFF, hH.NOTE_MOD, hH.NOTE_BEND, hH.NOTE_PRES);
+      mNoteInput = mMidiIn.createNoteInput (hH.DEV_NAME, hH.NOTE_ON, hH.NOTE_OFF, hH.NOTE_MOD, hH.NOTE_BEND, hH.NOTE_PRES);
 
       //Cursor Track / Device stuff
       //the first int here dictates the number of sends! this is different than the arrainger track itself, so the number of sends on the actual track are not relevant.
@@ -216,8 +220,14 @@ public class AtomSQExtension extends ControllerExtension
       mTransport.playStartPosition().markInterested();
       mTransport.playPositionInSeconds().markInterested();
 
+      //Session View (Editor mode): 8 tracks x 4 scenes, mapped onto the 32 keys
+      initSessionBank();
+
       //API Hardware surface
       inithardwareSurface(mHost);
+
+      //Display of the parameter name and value while an encoder is turned
+      initEncoderOverlay();
 
       //Modes
       //TODO this does not have any effect it seems. Still need to force the app to select the first track on start to get the ball rolling.
@@ -270,6 +280,10 @@ public class AtomSQExtension extends ControllerExtension
 
       //mLastLayer must be the layer you intend to start with. if you set it to Base, odd shit happens. So we are priming the variable here. 
       mLastLayer = mInstLayer;
+
+      //Key LEDs (Session View). Must come after DM.initHW(), which switches the controller into native mode.
+      mKeyColors = new KeyColors(mMidiOut);
+
       activateLayer(mInstLayer, null);
       mHost.println("INIT: complete");
 
@@ -348,6 +362,15 @@ public class AtomSQExtension extends ControllerExtension
       for (int i = 0; i < 9; i++)
       {
          createEncoder(i);
+      }
+
+      //Keyboard keys as buttons: in native mode they send Note-On on channel 1, notes 36 (lowest key) to 67
+      for (int i = 0; i < KeyColors.KEY_COUNT; i++)
+      {
+         final HardwareButton keyButton = mHardwareSurface.createHardwareButton("key" + i);
+         keyButton.pressedAction().setActionMatcher(mMidiIn.createNoteOnActionMatcher(0, KeyColors.FIRST_KEY_NOTE + i));
+         keyButton.setBounds(8.0 + i * 11.5, 130.0, 10.0, 25.0);
+         mKeyButtons[i] = keyButton;
       }
       
       setPhysicalPositions();
@@ -677,6 +700,219 @@ public class AtomSQExtension extends ControllerExtension
             // };
          }
       }
+
+      //Session View: the keys show clips only in the Editor layer, otherwise the LEDs are left dark.
+      final boolean editor = (layer == mEditLayer);
+      //the mode sysex resets the key LEDs, so forget what was sent and let the next flush write all keys again
+      if (editor && !mEditorActive && mKeyColors != null) { mKeyColors.invalidate(); }
+      mEditorActive = editor;
+      setSessionIndication(editor);
+      if (!editor && mKeyColors != null) { mKeyColors.clear(); }
+      //in the Editor layer the keys launch clips, so they must not play notes at the same time
+      if (mNoteInput != null) { mNoteInput.setKeyTranslationTable(editor ? mKeysMuted : mKeysNormal); }
+   }
+
+   //Encoder overlay: while one of encoders 1-8 is turned, the display shows what it controls ("Cutoff" / "300 Hz").
+   //The hardware control itself knows the name and the displayed value of whatever it is bound to in the active layer.
+   private void initEncoderOverlay()
+   {
+      for (int i = 0; i < 8; i++)
+      {
+         final int index = i;
+         final RelativeHardwareKnob encoder = mEncoders[i];
+         encoder.isUpdatingTargetValue().markInterested();
+         encoder.targetName().markInterested();
+         encoder.targetDisplayedValue().markInterested();
+
+         final Runnable touched = () -> {
+            mTouchedEncoder = index;
+            mTouchedTime = System.currentTimeMillis();
+            //one more flush after the overlay time, so the normal Track / Device lines come back
+            mHost.scheduleTask(() -> mHost.requestFlush(), ENCODER_OVERLAY_MS + 50);
+         };
+         encoder.isUpdatingTargetValue().addValueObserver(updating -> { if (updating) { touched.run(); } });
+         encoder.targetValue().addValueObserver(v -> { if (encoder.isUpdatingTargetValue().get()) { touched.run(); } });
+      }
+   }
+
+   private boolean isInstActive()
+   {
+      return mInstLayer.isActive() || mInst2Layer.isActive();
+   }
+
+   //true if there is a previous (-1) or next (+1) page of remote controls
+   private boolean remotePageAvailable(final int direction)
+   {
+      final int index = mRemoteControls.selectedPageIndex().get();
+      final int count = mRemoteControls.pageNames().get().length;
+      return direction < 0 ? index > 0 : index < count - 1;
+   }
+
+   private void selectRemotePage(final int direction)
+   {
+      if (direction < 0) { mRemoteControls.selectPreviousPage(false); }
+      else { mRemoteControls.selectNextPage(false); }
+      mPageTime = System.currentTimeMillis();
+      mHost.scheduleTask(() -> mHost.requestFlush(), ENCODER_OVERLAY_MS + 50);
+   }
+
+   //the page overlay ("Filter" / "2/4") is shown when the page was changed more recently than an encoder was turned
+   private boolean isPageOverlayActive()
+   {
+      if (mPageTime <= mTouchedTime || System.currentTimeMillis() - mPageTime > ENCODER_OVERLAY_MS) { return false; }
+      return mRemoteControls.pageNames().get().length > 0;
+   }
+
+   //used by DisplayMode: true while the display should show the last turned encoder or the selected remote controls page
+   public boolean isEncoderOverlayActive()
+   {
+      if (isPageOverlayActive()) { return true; }
+      if (mTouchedEncoder < 0 || System.currentTimeMillis() - mTouchedTime > ENCODER_OVERLAY_MS) { return false; }
+      return !mEncoders[mTouchedEncoder].targetName().get().isEmpty();
+   }
+
+   public String getEncoderOverlayName()
+   {
+      if (isPageOverlayActive())
+      {
+         final String[] names = mRemoteControls.pageNames().get();
+         final int index = Math.max(0, Math.min(names.length - 1, mRemoteControls.selectedPageIndex().get()));
+         return names[index];
+      }
+      return mEncoders[mTouchedEncoder].targetName().get();
+   }
+
+   public String getEncoderOverlayValue()
+   {
+      if (isPageOverlayActive())
+      {
+         final int count = mRemoteControls.pageNames().get().length;
+         return "Page " + (mRemoteControls.selectedPageIndex().get() + 1) + "/" + count;
+      }
+      return mEncoders[mTouchedEncoder].targetDisplayedValue().get();
+   }
+
+   //Session View: bank of 8 tracks x 4 scenes
+   private void initSessionBank()
+   {
+      mSessionBank = mHost.createTrackBank(KeyColors.KEY_COUNT / SESSION_SCENES, 0, SESSION_SCENES, true);
+      mSessionBank.canScrollBackwards().markInterested();
+      mSessionBank.canScrollForwards().markInterested();
+      mSessionBank.scrollPosition().markInterested();
+      mSessionBank.sceneBank().canScrollBackwards().markInterested();
+      mSessionBank.sceneBank().canScrollForwards().markInterested();
+      mSessionBank.sceneBank().scrollPosition().markInterested();
+
+      for (int t = 0; t < mSessionBank.getSizeOfBank(); t++)
+      {
+         final Track track = mSessionBank.getItemAt(t);
+         track.exists().markInterested();
+         track.color().markInterested();
+         final ClipLauncherSlotBank slots = track.clipLauncherSlotBank();
+         for (int s = 0; s < SESSION_SCENES; s++)
+         {
+            final ClipLauncherSlot slot = slots.getItemAt(s);
+            slot.hasContent().markInterested();
+            slot.isPlaying().markInterested();
+            slot.isRecording().markInterested();
+            slot.isPlaybackQueued().markInterested();
+            slot.isRecordingQueued().markInterested();
+            slot.color().markInterested();
+         }
+      }
+
+      //key translation tables for the note input: identity, and "all notes muted"
+      for (int i = 0; i < 128; i++)
+      {
+         mKeysNormal[i] = i;
+         mKeysMuted[i] = -1;
+      }
+   }
+
+   //Shows or hides the coloured clip frame in the Bitwig UI that marks the 8 x 4 clips controlled by the keys
+   private void setSessionIndication(final boolean on)
+   {
+      if (mSessionBank == null) { return; }
+      //ClipLauncherSlotBank.setIndication is deprecated since API 17 and throws. The frame in Bitwig is set by the scene
+      //bank (rows) together with the track bank (columns), as in Bitwig's own API 17 extensions.
+      mSessionBank.sceneBank().setIndication(on);
+      mSessionBank.setShouldShowClipLauncherFeedback(on);
+   }
+
+   //Writes the state of the 8 x 4 clips to the key LEDs. Key index = track * 4 + scene (lowest key = first track, first scene).
+   private void updateSessionLeds()
+   {
+      if (mKeyColors == null || mSessionBank == null) { return; }
+
+      for (int t = 0; t < mSessionBank.getSizeOfBank(); t++)
+      {
+         final Track track = mSessionBank.getItemAt(t);
+         final boolean exists = track.exists().get();
+         final Color trackColor = track.color().get();
+         final ClipLauncherSlotBank slots = track.clipLauncherSlotBank();
+
+         for (int s = 0; s < SESSION_SCENES; s++)
+         {
+            final int key = s * SESSION_TRACKS + t;
+            if (!exists)
+            {
+               mKeyColors.setKey(key, 0, 0, 0);
+               continue;
+            }
+
+            final ClipLauncherSlot slot = slots.getItemAt(s);
+            if (slot.isRecording().get() || slot.isRecordingQueued().get())
+            {
+               mKeyColors.setKey(key, 1.0, 0.0, 0.0);
+            }
+            else if (slot.isPlaybackQueued().get())
+            {
+               mKeyColors.setKey(key, 0.7, 0.7, 0.7);
+            }
+            else if (slot.hasContent().get())
+            {
+               final Color c = slot.color().get();
+               final double f = slot.isPlaying().get() ? CLIP_PLAYING : CLIP_STOPPED;
+               mKeyColors.setKey(key, c.getRed() * f, c.getGreen() * f, c.getBlue() * f);
+            }
+            else
+            {
+               //empty slot: a faint hint of the track colour
+               mKeyColors.setKey(key, trackColor.getRed() * SLOT_EMPTY, trackColor.getGreen() * SLOT_EMPTY, trackColor.getBlue() * SLOT_EMPTY);
+            }
+         }
+      }
+   }
+
+   private void launchSessionClip(final int key)
+   {
+      //layout: one scene per group of 8 keys (keys 0-7 = scene 1, tracks 1-8; keys 8-15 = scene 2, ...)
+      final int s = key / SESSION_TRACKS;
+      final int t = key % SESSION_TRACKS;
+      final Track track = mSessionBank.getItemAt(t);
+      final ClipLauncherSlot slot = track.clipLauncherSlotBank().getItemAt(s);
+
+      if (mShift)
+      {
+         //Shift + key stops this clip. A track plays one clip at a time, so the track is stopped, but only if this
+         //slot is the one playing (or queued), so a different clip on the same track is not stopped by accident.
+         if (slot.isPlaying().get() || slot.isPlaybackQueued().get())
+         {
+            track.stop();
+         }
+      }
+      else
+      {
+         slot.launch();
+      }
+   }
+
+   private void stopSessionTracks()
+   {
+      for (int t = 0; t < mSessionBank.getSizeOfBank(); t++)
+      {
+         mSessionBank.getItemAt(t).stop();
+      }
    }
 
    private void getactiveLayers(Layers mLayers)
@@ -809,18 +1045,30 @@ public class AtomSQExtension extends ControllerExtension
    {
       //this can coincide with other shift functions in the base layer!
       mShiftLayer.bind(mEncoders[8], mMasterTrack.volume());
-      mShiftLayer.bindPressed(mUpButton, () ->{
-         mApplication.focusPanelAbove();
-      } );
-      mShiftLayer.bindPressed(mDownButton, () ->{
-         mApplication.focusPanelBelow();
-      } );
-      mShiftLayer.bindPressed(mLeftButton, () ->{
-         mApplication.focusPanelToLeft();
-      } );
-      mShiftLayer.bindPressed(mRightButton, () ->{
-         mApplication.focusPanelToRight();
-      } );
+      //Shift + arrows. The shift layer sits on top of the mode layers, so it has to handle the Editor mode itself.
+      //Inst modes:  Shift + Up/Down = previous / next page of remote controls of the device
+      //Editor mode: Shift + Up/Down = scenes one step, Shift + Left/Right = tracks one page of 8
+      //other modes: focus the panel above / below / left / right, as before
+      mShiftLayer.bindToggle(mUpButton, () -> {
+         if (isInstActive()) { selectRemotePage(-1); }
+         else if (mEditorActive) { mSessionBank.sceneBank().scrollBackwards(); }
+         else { mApplication.focusPanelAbove(); }
+      }, () -> isInstActive() ? remotePageAvailable(-1)
+              : mEditorActive ? mSessionBank.sceneBank().canScrollBackwards().get()
+              : mCursorTrack.hasPrevious().get());
+      mShiftLayer.bindToggle(mDownButton, () -> {
+         if (isInstActive()) { selectRemotePage(1); }
+         else if (mEditorActive) { mSessionBank.sceneBank().scrollForwards(); }
+         else { mApplication.focusPanelBelow(); }
+      }, () -> isInstActive() ? remotePageAvailable(1)
+              : mEditorActive ? mSessionBank.sceneBank().canScrollForwards().get()
+              : mCursorTrack.hasNext().get());
+      mShiftLayer.bindToggle(mLeftButton, () -> {
+         if (mEditorActive) { mSessionBank.scrollPageBackwards(); } else { mApplication.focusPanelToLeft(); }
+      }, () -> mEditorActive ? mSessionBank.canScrollBackwards().get() : mCursorDevice.hasPrevious().get());
+      mShiftLayer.bindToggle(mRightButton, () -> {
+         if (mEditorActive) { mSessionBank.scrollPageForwards(); } else { mApplication.focusPanelToRight(); }
+      }, () -> mEditorActive ? mSessionBank.canScrollForwards().get() : mCursorDevice.hasNext().get());
    }
 
    private void createSongLayer()
@@ -934,7 +1182,40 @@ public class AtomSQExtension extends ControllerExtension
 
    private void createEditLayer()
    {
+      //Editor mode = Session View. The 32 keys are 8 tracks x 4 scenes of clips.
       mEditLayer.bind(() -> true, mEditorButton);
+      mEditLayer.bind(() -> false, mBackButton);
+      mEditLayer.bind(() -> false, mForwardButton);
+
+      //Keys launch clips
+      for (int i = 0; i < KeyColors.KEY_COUNT; i++)
+      {
+         final int key = i;
+         mEditLayer.bindPressed(mKeyButtons[i], () -> launchSessionClip(key));
+      }
+
+      //Display buttons: 1 stops the visible tracks, 2-5 launch scene 1-4 of the visible page
+      mEditLayer.bindPressed(m1Button, () -> stopSessionTracks());
+      for (int s = 0; s < SESSION_SCENES; s++)
+      {
+         final int scene = s;
+         final HardwareButton sceneButton = new HardwareButton[]{m2Button, m3Button, m4Button, m5Button}[s];
+         mEditLayer.bindPressed(sceneButton, () -> mSessionBank.sceneBank().getItemAt(scene).launch());
+      }
+
+      //Arrows scroll the view: Up/Down by scenes, Left/Right by tracks. Left/Right move the 8 tracks one track per press (1-8, 2-9, ...), a full page of 8 with Shift. Up/Down move one page of 4 scenes, a single scene with Shift.
+      mEditLayer.bindToggle(mUpButton, () -> {
+         if (mShift) { mSessionBank.sceneBank().scrollBackwards(); } else { mSessionBank.sceneBank().scrollPageBackwards(); }
+      }, mSessionBank.sceneBank().canScrollBackwards());
+      mEditLayer.bindToggle(mDownButton, () -> {
+         if (mShift) { mSessionBank.sceneBank().scrollForwards(); } else { mSessionBank.sceneBank().scrollPageForwards(); }
+      }, mSessionBank.sceneBank().canScrollForwards());
+      mEditLayer.bindToggle(mLeftButton, () -> {
+         if (mShift) { mSessionBank.scrollPageBackwards(); } else { mSessionBank.scrollBackwards(); }
+      }, mSessionBank.canScrollBackwards());
+      mEditLayer.bindToggle(mRightButton, () -> {
+         if (mShift) { mSessionBank.scrollPageForwards(); } else { mSessionBank.scrollForwards(); }
+      }, mSessionBank.canScrollForwards());
    }
 
    private void createUserLayer()
@@ -1104,6 +1385,7 @@ public class AtomSQExtension extends ControllerExtension
    }
 
    mHardwareSurface.updateHardware();
+   if (mEditorActive) { updateSessionLeds(); }
    DM.updateDisplay();
 
       //V1.1 troubleshooting for display mode issues
@@ -1163,7 +1445,8 @@ public class AtomSQExtension extends ControllerExtension
    @Override
    public void exit()
 {
-   //Exit Live Mode
+   //Switch the key LEDs off, then exit Live Mode
+   if (mKeyColors != null) { mKeyColors.clear(); }
    mMidiOut.sendMidi(143,00,00);
    mHost.showPopupNotification("Atom SQ Exited");
 }
@@ -1215,6 +1498,24 @@ public class AtomSQExtension extends ControllerExtension
    }; 
    public Layer mBaseLayer, mInstLayer, mSongLayer, mSong2Layer, mEditLayer, mUserLayer, mInst2Layer, mShiftLayer, mInst3Layer, mBrowserLayer, mInstEmptyLayer, mDeviceBrowserLayer,mMultiBrowserLayer,mSamplesBrowserLayer,mPresetBrowserLayer;
    private Layer mLastLayer;
+
+   //Session View (Editor mode)
+   private static final long ENCODER_OVERLAY_MS = 1500;
+   private int mTouchedEncoder = -1;
+   private long mTouchedTime = 0;
+   private long mPageTime = 0;
+   private static final int SESSION_SCENES = 4;
+   private static final int SESSION_TRACKS = KeyColors.KEY_COUNT / SESSION_SCENES;
+   private static final double CLIP_PLAYING = 1.0;
+   private static final double CLIP_STOPPED = 0.3;
+   private static final double SLOT_EMPTY = 0.1;
+   public TrackBank mSessionBank;
+   private KeyColors mKeyColors;
+   private NoteInput mNoteInput;
+   private boolean mEditorActive = false;
+   private final HardwareButton[] mKeyButtons = new HardwareButton[KeyColors.KEY_COUNT];
+   private final Integer[] mKeysNormal = new Integer[128];
+   private final Integer[] mKeysMuted = new Integer[128];
    //final int mLayersCount = mLayers.getLayers().size();
    final List<Layer> mLayerList = mLayers.getLayers();
    final List<Layer> mActiveLayers = new ArrayList<>();

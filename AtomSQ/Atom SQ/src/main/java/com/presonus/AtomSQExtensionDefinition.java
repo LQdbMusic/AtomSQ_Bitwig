@@ -12,7 +12,7 @@ import com.bitwig.extension.controller.api.ControllerHost;
 
 public class AtomSQExtensionDefinition extends ControllerExtensionDefinition
 {
-   private static final UUID DRIVER_ID = UUID.fromString("ed5268cb-92e6-4d82-86d4-7bc9da9be1d1");
+   private static final UUID DRIVER_ID = UUID.fromString("7aa15bbc-2d87-439e-8ca8-69fcda4617d5"); //own ID, so this build is listed separately from the original Atom SQ extension
    
    public AtomSQExtensionDefinition()
    {
@@ -22,7 +22,7 @@ public class AtomSQExtensionDefinition extends ControllerExtensionDefinition
    @Override
    public String getName()
    {
-      return "Atom SQ (by James)";
+      return "AtomSQ_LED (by LQdb/James)";
    }
    
    @Override
@@ -34,7 +34,7 @@ public class AtomSQExtensionDefinition extends ControllerExtensionDefinition
    @Override
    public String getVersion()
    {
-      return "1.1";
+      return "1.1-LED";
    }
 
    @Override

@@ -36,6 +36,7 @@ public class DisplayMode
    //V1.1
    private Layer dInstEmptyLayer;
    private Layer dDeviceBrowserLayer;
+   private Layer dEditLayer;
    private PopupBrowser dPopupBrowser;
    private String dPopupBrowsertype;
 
@@ -53,6 +54,7 @@ public class DisplayMode
       //V1.1
       dInstEmptyLayer = dASQCE.mInstEmptyLayer;
       dDeviceBrowserLayer = dASQCE.mDeviceBrowserLayer;
+      dEditLayer = dASQCE.mEditLayer;
       dPopupBrowser = dASQCE.mPopupBrowser;
 
     }
@@ -86,6 +88,18 @@ public class DisplayMode
          dMidiOut.sendSysex(sysex2);
       }
 
+      //Editor mode = Session View: show which part of the clip grid the keys control
+      else if (dEditLayer.isActive()){
+         final int trackStart = dASQCE.mSessionBank.scrollPosition().get() + 1;
+         final int sceneStart = dASQCE.mSessionBank.sceneBank().scrollPosition().get() + 1;
+         final String line1 = "Session View";
+         final String line2 = "Trk " + trackStart + "-" + (trackStart + 7) + "  Scn " + sceneStart + "-" + (sceneStart + 3);
+         byte[] sysexA = SysexBuilder.fromHex(sH.sheader).addByte(sH.MainL1).addHex(sH.yellow).addByte(sH.spc).addString(line1, line1.length()).terminate();
+         dMidiOut.sendSysex(sysexA);
+         byte[] sysexB = SysexBuilder.fromHex(sH.sheader).addByte(sH.MainL2).addHex(sH.white).addByte(sH.spc).addString(line2, line2.length()).terminate();
+         dMidiOut.sendSysex(sysexB);
+      }
+
       //V1.1 adding extra case for empty, to say "add a device"
       else if (dInstEmptyLayer.isActive()){
          //Main line 1 
@@ -98,10 +112,20 @@ public class DisplayMode
          dMidiOut.sendSysex(sysex3);
 
       }
+      //an encoder was just turned: show what it controls and its value, e.g. "Cutoff" / "300 Hz"
+      else if (dASQCE.isEncoderOverlayActive()){
+         final String pName = displayText(dASQCE.getEncoderOverlayName());
+         final String pValue = displayText(dASQCE.getEncoderOverlayValue());
+         byte[] sysexN = SysexBuilder.fromHex(sH.sheader).addByte(sH.MainL1).addHex(sH.yellow).addByte(sH.spc).addString(pName, pName.length()).terminate();
+         dMidiOut.sendSysex(sysexN);
+         byte[] sysexV = SysexBuilder.fromHex(sH.sheader).addByte(sH.MainL2).addHex(sH.white).addByte(sH.spc).addString(pValue, pValue.length()).terminate();
+         dMidiOut.sendSysex(sysexV);
+      }
+
       //V1.1 adding DeviceBrowser option
 
 
-      else 
+      else
             {
          //Main line 1 
          String pTrack = dCursorTrack.name().get();
@@ -161,6 +185,22 @@ public class DisplayMode
       //it also takes command of the nav keys on the right...if set to 0, the display still shows and navigates, but thie keys ALSO send midi messages
       //dMidiOut.sendSysex("F0000106221401F7");
       dMidiOut.sendSysex("F0000106221301F7");
+   }
+
+   //Sysex text may only contain 7-bit characters: replace the few special characters Bitwig uses in parameter values
+   //and keep the text short enough for one display line.
+   private static String displayText(final String text)
+   {
+      final StringBuilder sb = new StringBuilder();
+      for (final char c : text.toCharArray())
+      {
+         if (c == 'µ') { sb.append('u'); }
+         else if (c == '°') { sb.append("deg"); }
+         else if (c == '−' || c == '–') { sb.append('-'); }
+         else if (c >= 32 && c < 127) { sb.append(c); }
+         else { sb.append('?'); }
+      }
+      return sb.length() > 24 ? sb.substring(0, 24) : sb.toString();
    }
 
    //changing private to public for the mode finder bits in the layer change above
@@ -294,13 +334,13 @@ public void InstEmptyMode ()
     public void EditMode ()
     {
       //dHost.println("EditMode");
-      dHost.showPopupNotification("Nothing to see here");
+      dHost.showPopupNotification("Session View");
 
       dMidiOut.sendSysex("F0000106221300F7");
       dMidiOut.sendSysex("F0000106221400F7");
 
       //button titles
-      String[] mTitles= {"", "", "", "", "", ""};
+      String[] mTitles= {"Stop", "Scene 1", "Scene 2", "Scene 3", "Scene 4", ""};
       
       for (int i = 0; i < 6; i++) 
       {
@@ -311,10 +351,11 @@ public void InstEmptyMode ()
 
       //line 1
       dMidiOut.sendSysex("F0 00 01 06 22 12 06 00 5B 5B 00 F7");
- 
-      dMidiOut.sendSysex("F0000106221301F7");
+
+      //Deliberately NO "F0000106221301F7" here: tested on a real Atom SQ, that sysex hands the key LEDs back to the
+      //firmware (all keys white, chromatic), so the clip colours sent from the extension would be overridden.
     }
- 
+
     public void UserMode ()
     {
       dHost.println("Keyboard");
