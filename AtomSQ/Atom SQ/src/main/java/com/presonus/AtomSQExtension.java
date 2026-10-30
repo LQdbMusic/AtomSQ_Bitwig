@@ -24,6 +24,10 @@ import com.bitwig.extension.controller.api.CursorRemoteControlsPage;
 import com.bitwig.extension.controller.api.ClipLauncherSlot;
 import com.bitwig.extension.controller.api.ClipLauncherSlotBank;
 import com.bitwig.extension.controller.api.CursorTrack;
+import com.bitwig.extension.controller.api.DrumPad;
+import com.bitwig.extension.controller.api.DrumPadBank;
+import com.bitwig.extension.controller.api.NoteStep;
+import com.bitwig.extension.controller.api.PinnableCursorClip;
 import com.bitwig.extension.controller.api.NoteInput;
 import com.bitwig.extension.controller.api.HardwareButton;
 import com.bitwig.extension.controller.api.HardwareControl;
@@ -223,6 +227,9 @@ public class AtomSQExtension extends ControllerExtension
       //Session View (Editor mode): 8 tracks x 4 scenes, mapped onto the 32 keys
       initSessionBank();
 
+      //Drum sequencer (second page of the Editor mode): drum rack pads + step lane of the selected clip
+      initDrumSequencer();
+
       //API Hardware surface
       inithardwareSurface(mHost);
 
@@ -369,6 +376,10 @@ public class AtomSQExtension extends ControllerExtension
       {
          final HardwareButton keyButton = mHardwareSurface.createHardwareButton("key" + i);
          keyButton.pressedAction().setActionMatcher(mMidiIn.createNoteOnActionMatcher(0, KeyColors.FIRST_KEY_NOTE + i));
+         //release = Note-Off, or Note-On with velocity 0 (needed to hold a step key while turning an encoder)
+         final int keyNote = KeyColors.FIRST_KEY_NOTE + i;
+         keyButton.releasedAction().setActionMatcher(mMidiIn.createActionMatcher(
+            "(status == 0x80 && data1 == " + keyNote + ") || (status == 0x90 && data1 == " + keyNote + " && data2 == 0)"));
          keyButton.setBounds(8.0 + i * 11.5, 130.0, 10.0, 25.0);
          mKeyButtons[i] = keyButton;
       }
@@ -706,10 +717,20 @@ public class AtomSQExtension extends ControllerExtension
       //the mode sysex resets the key LEDs, so forget what was sent and let the next flush write all keys again
       if (editor && !mEditorActive && mKeyColors != null) { mKeyColors.invalidate(); }
       mEditorActive = editor;
-      setSessionIndication(editor);
+      setSessionIndication(editor && mEditorPage == PAGE_SESSION);
       if (!editor && mKeyColors != null) { mKeyColors.clear(); }
-      //in the Editor layer the keys launch clips, so they must not play notes at the same time
-      if (mNoteInput != null) { mNoteInput.setKeyTranslationTable(editor ? mKeysMuted : mKeysNormal); }
+      //in the Editor layer the keys launch clips / toggle steps, so they must not play notes at the same time
+      applyKeyTable();
+   }
+
+   //Key translation table of the note input: normal keyboard outside the Editor, muted on the Session page,
+   //only the lower row (the 16 drum pads, notes 36-51) sounds on the drum page.
+   private void applyKeyTable()
+   {
+      if (mNoteInput == null) { return; }
+      if (!mEditorActive) { mNoteInput.setKeyTranslationTable(mKeysNormal); }
+      else if (mEditorPage == PAGE_DRUMS) { mNoteInput.setKeyTranslationTable(mKeysDrums); }
+      else { mNoteInput.setKeyTranslationTable(mKeysMuted); }
    }
 
    //Encoder overlay: while one of encoders 1-8 is turned, the display shows what it controls ("Cutoff" / "300 Hz").
@@ -826,6 +847,209 @@ public class AtomSQExtension extends ControllerExtension
       {
          mKeysNormal[i] = i;
          mKeysMuted[i] = -1;
+         mKeysDrums[i] = (i >= KeyColors.FIRST_KEY_NOTE && i < KeyColors.FIRST_KEY_NOTE + DRUM_PADS) ? i : -1;
+      }
+   }
+
+   // ---------------------------------------------------------------------------------------------------------
+   // Drum sequencer (Editor mode, page 2). Lower key row (notes 36-51) = the 16 pads of the Bitwig Drum Rack of the
+   // current track, upper key row (notes 52-67) = the 16 steps of the selected pad's lane in the selected clip.
+   // ---------------------------------------------------------------------------------------------------------
+   private void initDrumSequencer()
+   {
+      mDrumPadBank = mCursorDevice.createDrumPadBank(DRUM_PADS);
+      mDrumPadBank.exists().markInterested();
+      for (int i = 0; i < DRUM_PADS; i++)
+      {
+         final DrumPad pad = mDrumPadBank.getItemAt(i);
+         pad.exists().markInterested();
+         pad.color().markInterested();
+         pad.name().markInterested();
+      }
+
+      mDrumClip = mCursorTrack.createLauncherCursorClip(DRUM_STEPS, 1);
+      mDrumClip.exists().markInterested();
+      mDrumClip.canScrollStepsBackwards().markInterested();
+      mDrumClip.canScrollStepsForwards().markInterested();
+      mDrumClip.playingStep().addValueObserver(step -> mDrumPlayingStep = step, -1);
+      mDrumClip.scrollToKey(KeyColors.FIRST_KEY_NOTE);
+      mDrumClip.scrollToStep(0);
+      mDrumClip.addNoteStepObserver(step -> {
+         final int x = step.x();
+         if (step.y() == 0 && x >= 0 && x < DRUM_STEPS)
+         {
+            final NoteStep.State state = step.state();
+            mDrumVel[x] = step.velocity();
+            if (state == NoteStep.State.NoteOn) { mDrumSteps[x] = 2; }
+            else if (state == NoteStep.State.NoteSustain) { mDrumSteps[x] = 1; }
+            else { mDrumSteps[x] = 0; }
+         }
+      });
+   }
+
+   public boolean isDrumPageSelected() { return mEditorPage == PAGE_DRUMS; }
+   public boolean isDrumPage() { return mEditorActive && mEditorPage == PAGE_DRUMS; }
+   private boolean isSessionPage() { return mEditorActive && mEditorPage == PAGE_SESSION; }
+   public boolean drumRackAvailable() { return mDrumPadBank != null && mDrumPadBank.exists().get(); }
+   public boolean drumClipAvailable() { return mDrumClip != null && mDrumClip.exists().get(); }
+   public int getDrumLane() { return mDrumLane; }
+   public int getDrumStepPage() { return mDrumStepPage; }
+   public String getDrumLaneName()
+   {
+      final DrumPad pad = mDrumPadBank.getItemAt(mDrumLane);
+      return pad.exists().get() ? pad.name().get() : "Pad " + (mDrumLane + 1);
+   }
+
+   //switches between the Session page and the Drum page of the Editor mode
+   private void setEditorPage(final int page)
+   {
+      if (mEditorPage == page) { return; }
+      mEditorPage = page;
+      if (mKeyColors != null) { mKeyColors.invalidate(); mKeyColors.clear(); }
+      setSessionIndication(page == PAGE_SESSION);
+      applyKeyTable();
+      DM.EditMode();
+   }
+
+   private void selectDrumLane(final int lane)
+   {
+      mDrumLane = lane;
+      mDrumClip.scrollToKey(KeyColors.FIRST_KEY_NOTE + lane);
+   }
+
+   private void scrollDrumSteps(final int direction)
+   {
+      final int page = Math.max(0, mDrumStepPage + direction);
+      if (direction > 0 && !mDrumClip.canScrollStepsForwards().get()) { return; }
+      if (direction < 0 && mDrumStepPage == 0) { return; }
+      mDrumStepPage = page;
+      mDrumClip.scrollToStep(DRUM_STEPS * mDrumStepPage);
+   }
+
+   //key index 0-15 = pad (lower row), 16-31 = step (upper row)
+   private void drumKeyPressed(final int key)
+   {
+      if (key < DRUM_PADS)
+      {
+         selectDrumLane(key);
+      }
+      else if (drumClipAvailable())
+      {
+         //empty step: created at once. Existing step: removed on release, unless it was held to edit its velocity.
+         final int x = key - DRUM_PADS;
+         mStepHeld[x] = true;
+         mVelStep = x;
+         if (mDrumSteps[x] == 0)
+         {
+            mStepDeleteOnRelease[x] = false;
+            mDrumClip.toggleStep(x, 0, DRUM_VELOCITY);
+         }
+         else
+         {
+            mStepDeleteOnRelease[x] = true;
+         }
+      }
+   }
+
+   private void drumKeyReleased(final int key)
+   {
+      if (key < DRUM_PADS) { return; }
+      final int x = key - DRUM_PADS;
+      if (mStepHeld[x] && mStepDeleteOnRelease[x] && drumClipAvailable())
+      {
+         mDrumClip.toggleStep(x, 0, DRUM_VELOCITY);
+      }
+      mStepHeld[x] = false;
+      mStepDeleteOnRelease[x] = false;
+      mVelTime = System.currentTimeMillis();
+      mHost.scheduleTask(() -> mHost.requestFlush(), VELOCITY_DISPLAY_MS + 50);
+   }
+
+   //encoder 1 while step keys are held: velocity of the held steps (VELOCITY_STEP per tick, 1 with Shift)
+   private void editStepVelocity(final int direction)
+   {
+      if (!isDrumPage() || !drumClipAvailable()) { return; }
+      final double delta = direction * (mShift ? 1.0 : VELOCITY_STEP) / 127.0;
+      for (int x = 0; x < DRUM_STEPS; x++)
+      {
+         if (!mStepHeld[x]) { continue; }
+         final double v = Math.max(1.0 / 127.0, Math.min(1.0, mDrumVel[x] + delta));
+         mStepDeleteOnRelease[x] = false;
+         mDrumVel[x] = v;
+         mDrumClip.getStep(0, x, 0).setVelocity(v);
+         mVelStep = x;
+         mVelTime = System.currentTimeMillis();
+      }
+      mHost.scheduleTask(() -> mHost.requestFlush(), VELOCITY_DISPLAY_MS + 50);
+   }
+
+   //used by DisplayMode: text like "Step 4  Vel 87" while a step is held or was just edited, otherwise null
+   public String getVelocityDisplay()
+   {
+      if (!isDrumPage() || mVelStep < 0) { return null; }
+      boolean held = false;
+      for (int x = 0; x < DRUM_STEPS; x++) { if (mStepHeld[x]) { held = true; } }
+      if (!held && System.currentTimeMillis() - mVelTime > VELOCITY_DISPLAY_MS) { return null; }
+      if (mDrumSteps[mVelStep] == 0 && !held) { return null; }
+      return "Step " + (mDrumStepPage * DRUM_STEPS + mVelStep + 1) + "  Vel " + Math.round(mDrumVel[mVelStep] * 127.0);
+   }
+
+   private void updateDrumLeds()
+   {
+      if (mKeyColors == null || mDrumPadBank == null) { return; }
+
+      //lower row: the pads, the selected lane bright
+      for (int i = 0; i < DRUM_PADS; i++)
+      {
+         final DrumPad pad = mDrumPadBank.getItemAt(i);
+         if (!pad.exists().get())
+         {
+            mKeyColors.setKey(i, 0, 0, 0);
+            continue;
+         }
+         final Color c = pad.color().get();
+         final double f = (i == mDrumLane) ? 1.0 : 0.25;
+         mKeyColors.setKey(i, c.getRed() * f, c.getGreen() * f, c.getBlue() * f);
+      }
+
+      //upper row: the steps of the selected lane
+      final DrumPad lane = mDrumPadBank.getItemAt(mDrumLane);
+      final boolean clip = drumClipAvailable();
+      final Color lc = lane.exists().get() ? lane.color().get() : null;
+      final double lr = lc != null ? lc.getRed() : 1.0;
+      final double lg = lc != null ? lc.getGreen() : 1.0;
+      final double lb = lc != null ? lc.getBlue() : 1.0;
+      final int playing = mDrumPlayingStep - DRUM_STEPS * mDrumStepPage;
+
+      for (int i = 0; i < DRUM_STEPS; i++)
+      {
+         final int key = DRUM_PADS + i;
+         if (!clip)
+         {
+            mKeyColors.setKey(key, 0, 0, 0);
+            continue;
+         }
+         final int state = mDrumSteps[i];
+         if (i == playing)
+         {
+            //playhead
+            mKeyColors.setKey(key, state > 0 ? 1.0 : 0.35, state > 0 ? 1.0 : 0.35, state > 0 ? 1.0 : 0.35);
+         }
+         else if (state == 2)
+         {
+            final double f = 0.3 + 0.7 * Math.max(0.0, Math.min(1.0, mDrumVel[i]));
+            mKeyColors.setKey(key, lr * f, lg * f, lb * f);
+         }
+         else if (state == 1)
+         {
+            mKeyColors.setKey(key, lr * 0.4, lg * 0.4, lb * 0.4);
+         }
+         else
+         {
+            //empty step: a faint marker, the first step of each beat slightly brighter
+            final double f = (i % 4 == 0) ? 0.08 : 0.03;
+            mKeyColors.setKey(key, f, f, f);
+         }
       }
    }
 
@@ -1051,24 +1275,30 @@ public class AtomSQExtension extends ControllerExtension
       //other modes: focus the panel above / below / left / right, as before
       mShiftLayer.bindToggle(mUpButton, () -> {
          if (isInstActive()) { selectRemotePage(-1); }
-         else if (mEditorActive) { mSessionBank.sceneBank().scrollBackwards(); }
+         else if (isSessionPage()) { mSessionBank.sceneBank().scrollBackwards(); }
+         else if (mEditorActive) { /* drum page: nothing */ }
          else { mApplication.focusPanelAbove(); }
       }, () -> isInstActive() ? remotePageAvailable(-1)
-              : mEditorActive ? mSessionBank.sceneBank().canScrollBackwards().get()
+              : isSessionPage() ? mSessionBank.sceneBank().canScrollBackwards().get()
+              : mEditorActive ? false
               : mCursorTrack.hasPrevious().get());
       mShiftLayer.bindToggle(mDownButton, () -> {
          if (isInstActive()) { selectRemotePage(1); }
-         else if (mEditorActive) { mSessionBank.sceneBank().scrollForwards(); }
+         else if (isSessionPage()) { mSessionBank.sceneBank().scrollForwards(); }
+         else if (mEditorActive) { /* drum page: nothing */ }
          else { mApplication.focusPanelBelow(); }
       }, () -> isInstActive() ? remotePageAvailable(1)
-              : mEditorActive ? mSessionBank.sceneBank().canScrollForwards().get()
+              : isSessionPage() ? mSessionBank.sceneBank().canScrollForwards().get()
+              : mEditorActive ? false
               : mCursorTrack.hasNext().get());
       mShiftLayer.bindToggle(mLeftButton, () -> {
-         if (mEditorActive) { mSessionBank.scrollPageBackwards(); } else { mApplication.focusPanelToLeft(); }
-      }, () -> mEditorActive ? mSessionBank.canScrollBackwards().get() : mCursorDevice.hasPrevious().get());
+         if (isDrumPage()) { scrollDrumSteps(-1); }
+         else if (mEditorActive) { mSessionBank.scrollPageBackwards(); } else { mApplication.focusPanelToLeft(); }
+      }, () -> isDrumPage() ? mDrumStepPage > 0 : mEditorActive ? mSessionBank.canScrollBackwards().get() : mCursorDevice.hasPrevious().get());
       mShiftLayer.bindToggle(mRightButton, () -> {
-         if (mEditorActive) { mSessionBank.scrollPageForwards(); } else { mApplication.focusPanelToRight(); }
-      }, () -> mEditorActive ? mSessionBank.canScrollForwards().get() : mCursorDevice.hasNext().get());
+         if (isDrumPage()) { scrollDrumSteps(1); }
+         else if (mEditorActive) { mSessionBank.scrollPageForwards(); } else { mApplication.focusPanelToRight(); }
+      }, () -> isDrumPage() ? mDrumClip.canScrollStepsForwards().get() : mEditorActive ? mSessionBank.canScrollForwards().get() : mCursorDevice.hasNext().get());
    }
 
    private void createSongLayer()
@@ -1182,40 +1412,66 @@ public class AtomSQExtension extends ControllerExtension
 
    private void createEditLayer()
    {
-      //Editor mode = Session View. The 32 keys are 8 tracks x 4 scenes of clips.
+      //Editor mode has two pages. Back button = Session View (8 tracks x 4 scenes of clips on the 32 keys),
+      //Forward button = Drum Sequencer (lower key row = 16 drum pads, upper key row = 16 steps of the selected pad).
       mEditLayer.bind(() -> true, mEditorButton);
-      mEditLayer.bind(() -> false, mBackButton);
-      mEditLayer.bind(() -> false, mForwardButton);
+      mEditLayer.bind(() -> mEditorPage == PAGE_DRUMS, mBackButton);
+      mEditLayer.bind(() -> mEditorPage == PAGE_SESSION, mForwardButton);
+      mEditLayer.bindPressed(mBackButton, () -> {
+         if (mShift) { mApplication.undo(); mHost.showPopupNotification("Undo"); }
+         else { setEditorPage(PAGE_SESSION); }
+      });
+      mEditLayer.bindPressed(mForwardButton, () -> {
+         if (mShift) { mApplication.redo(); mHost.showPopupNotification("Redo"); }
+         else { setEditorPage(PAGE_DRUMS); }
+      });
 
-      //Keys launch clips
+      //Keys: launch clips (Session page) or select a pad / toggle a step (Drum page)
       for (int i = 0; i < KeyColors.KEY_COUNT; i++)
       {
          final int key = i;
-         mEditLayer.bindPressed(mKeyButtons[i], () -> launchSessionClip(key));
+         mEditLayer.bindPressed(mKeyButtons[i], () -> {
+            if (mEditorPage == PAGE_DRUMS) { drumKeyPressed(key); } else { launchSessionClip(key); }
+         });
+         mEditLayer.bindReleased(mKeyButtons[i], () -> {
+            if (mEditorPage == PAGE_DRUMS) { drumKeyReleased(key); }
+         });
       }
 
-      //Display buttons: 1 stops the visible tracks, 2-5 launch scene 1-4 of the visible page
-      mEditLayer.bindPressed(m1Button, () -> stopSessionTracks());
+      //Encoder 1 on the Drum page: velocity of the held step(s)
+      final HardwareActionBindable velInc = mHost.createAction(() -> editStepVelocity(1), () -> "+");
+      final HardwareActionBindable velDec = mHost.createAction(() -> editStepVelocity(-1), () -> "-");
+      mEditLayer.bind(mEncoders[0], mHost.createRelativeHardwareControlStepTarget(velInc, velDec));
+
+      //Display buttons (Session page): 1 stops the visible tracks, 2-5 launch scene 1-4 of the visible page
+      mEditLayer.bindPressed(m1Button, () -> { if (mEditorPage == PAGE_SESSION) { stopSessionTracks(); } });
       for (int s = 0; s < SESSION_SCENES; s++)
       {
          final int scene = s;
          final HardwareButton sceneButton = new HardwareButton[]{m2Button, m3Button, m4Button, m5Button}[s];
-         mEditLayer.bindPressed(sceneButton, () -> mSessionBank.sceneBank().getItemAt(scene).launch());
+         mEditLayer.bindPressed(sceneButton, () -> {
+            if (mEditorPage == PAGE_SESSION) { mSessionBank.sceneBank().getItemAt(scene).launch(); }
+         });
       }
 
-      //Arrows scroll the view: Up/Down by scenes, Left/Right by tracks. Left/Right move the 8 tracks one track per press (1-8, 2-9, ...), a full page of 8 with Shift. Up/Down move one page of 4 scenes, a single scene with Shift.
+      //Arrows, Session page: Up/Down by scenes, Left/Right by tracks. Left/Right move the 8 tracks one track per press (1-8, 2-9, ...), a full page of 8 with Shift. Up/Down move one page of 4 scenes, a single scene with Shift.
+      //Arrows, Drum page: Left/Right = previous / next 16 steps of the clip.
       mEditLayer.bindToggle(mUpButton, () -> {
+         if (mEditorPage != PAGE_SESSION) { return; }
          if (mShift) { mSessionBank.sceneBank().scrollBackwards(); } else { mSessionBank.sceneBank().scrollPageBackwards(); }
-      }, mSessionBank.sceneBank().canScrollBackwards());
+      }, () -> mEditorPage == PAGE_SESSION && mSessionBank.sceneBank().canScrollBackwards().get());
       mEditLayer.bindToggle(mDownButton, () -> {
+         if (mEditorPage != PAGE_SESSION) { return; }
          if (mShift) { mSessionBank.sceneBank().scrollForwards(); } else { mSessionBank.sceneBank().scrollPageForwards(); }
-      }, mSessionBank.sceneBank().canScrollForwards());
+      }, () -> mEditorPage == PAGE_SESSION && mSessionBank.sceneBank().canScrollForwards().get());
       mEditLayer.bindToggle(mLeftButton, () -> {
-         if (mShift) { mSessionBank.scrollPageBackwards(); } else { mSessionBank.scrollBackwards(); }
-      }, mSessionBank.canScrollBackwards());
+         if (mEditorPage == PAGE_DRUMS) { scrollDrumSteps(-1); }
+         else if (mShift) { mSessionBank.scrollPageBackwards(); } else { mSessionBank.scrollBackwards(); }
+      }, () -> mEditorPage == PAGE_DRUMS ? mDrumStepPage > 0 : mSessionBank.canScrollBackwards().get());
       mEditLayer.bindToggle(mRightButton, () -> {
-         if (mShift) { mSessionBank.scrollPageForwards(); } else { mSessionBank.scrollForwards(); }
-      }, mSessionBank.canScrollForwards());
+         if (mEditorPage == PAGE_DRUMS) { scrollDrumSteps(1); }
+         else if (mShift) { mSessionBank.scrollPageForwards(); } else { mSessionBank.scrollForwards(); }
+      }, () -> mEditorPage == PAGE_DRUMS ? mDrumClip.canScrollStepsForwards().get() : mSessionBank.canScrollForwards().get());
    }
 
    private void createUserLayer()
@@ -1385,7 +1641,7 @@ public class AtomSQExtension extends ControllerExtension
    }
 
    mHardwareSurface.updateHardware();
-   if (mEditorActive) { updateSessionLeds(); }
+   if (mEditorActive) { if (mEditorPage == PAGE_DRUMS) { updateDrumLeds(); } else { updateSessionLeds(); } }
    DM.updateDisplay();
 
       //V1.1 troubleshooting for display mode issues
@@ -1513,6 +1769,28 @@ public class AtomSQExtension extends ControllerExtension
    private KeyColors mKeyColors;
    private NoteInput mNoteInput;
    private boolean mEditorActive = false;
+   //Editor mode pages: Session View (Back button) and Drum Sequencer (Forward button)
+   private static final int PAGE_SESSION = 0;
+   private static final int PAGE_DRUMS = 1;
+   private int mEditorPage = PAGE_SESSION;
+   private static final int DRUM_PADS = 16;
+   private static final int DRUM_STEPS = 16;
+   private static final int DRUM_VELOCITY = 100;
+   private DrumPadBank mDrumPadBank;
+   private PinnableCursorClip mDrumClip;
+   private final int[] mDrumSteps = new int[DRUM_STEPS];
+   private int mDrumLane = 0;
+   private int mDrumStepPage = 0;
+   private int mDrumPlayingStep = -1;
+   //velocity edit: hold a step key and turn encoder 1
+   private final double[] mDrumVel = new double[DRUM_STEPS];
+   private final boolean[] mStepHeld = new boolean[DRUM_STEPS];
+   private final boolean[] mStepDeleteOnRelease = new boolean[DRUM_STEPS];
+   private int mVelStep = -1;
+   private long mVelTime = 0;
+   private static final long VELOCITY_DISPLAY_MS = 1200;
+   private static final double VELOCITY_STEP = 6.0;
+   private final Integer[] mKeysDrums = new Integer[128];
    private final HardwareButton[] mKeyButtons = new HardwareButton[KeyColors.KEY_COUNT];
    private final Integer[] mKeysNormal = new Integer[128];
    private final Integer[] mKeysMuted = new Integer[128];

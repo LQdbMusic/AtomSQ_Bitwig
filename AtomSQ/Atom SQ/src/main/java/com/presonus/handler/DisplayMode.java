@@ -89,6 +89,26 @@ public class DisplayMode
       }
 
       //Editor mode = Session View: show which part of the clip grid the keys control
+      else if (dEditLayer.isActive() && dASQCE.isDrumPage()){
+         //Drum sequencer: selected pad (lane) and visible steps of the clip
+         String line1;
+         String line2;
+         if (!dASQCE.drumRackAvailable()) { line1 = "Drum Sequencer"; line2 = "No Drum Rack"; }
+         else if (!dASQCE.drumClipAvailable()) { line1 = "Drum Sequencer"; line2 = "Select a clip"; }
+         else
+         {
+            final int stepStart = dASQCE.getDrumStepPage() * 16 + 1;
+            line1 = displayText(dASQCE.getDrumLaneName());
+            line2 = "Pad " + (dASQCE.getDrumLane() + 1) + "  Step " + stepStart + "-" + (stepStart + 15);
+            final String vel = dASQCE.getVelocityDisplay();
+            if (vel != null) { line2 = vel; }
+         }
+         byte[] sysexA = SysexBuilder.fromHex(sH.sheader).addByte(sH.MainL1).addHex(sH.yellow).addByte(sH.spc).addString(line1, line1.length()).terminate();
+         dMidiOut.sendSysex(sysexA);
+         byte[] sysexB = SysexBuilder.fromHex(sH.sheader).addByte(sH.MainL2).addHex(sH.white).addByte(sH.spc).addString(line2, line2.length()).terminate();
+         dMidiOut.sendSysex(sysexB);
+      }
+
       else if (dEditLayer.isActive()){
          final int trackStart = dASQCE.mSessionBank.scrollPosition().get() + 1;
          final int sceneStart = dASQCE.mSessionBank.sceneBank().scrollPosition().get() + 1;
@@ -334,13 +354,14 @@ public void InstEmptyMode ()
     public void EditMode ()
     {
       //dHost.println("EditMode");
-      dHost.showPopupNotification("Session View");
+      final boolean drums = dASQCE.isDrumPageSelected();
+      dHost.showPopupNotification(drums ? "Drum Sequencer" : "Session View");
 
       dMidiOut.sendSysex("F0000106221300F7");
       dMidiOut.sendSysex("F0000106221400F7");
 
       //button titles
-      String[] mTitles= {"Stop", "Scene 1", "Scene 2", "Scene 3", "Scene 4", ""};
+      String[] mTitles= drums ? new String[]{"", "", "", "", "", ""} : new String[]{"Stop", "Scene 1", "Scene 2", "Scene 3", "Scene 4", ""};
       
       for (int i = 0; i < 6; i++) 
       {
