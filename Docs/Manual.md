@@ -182,4 +182,3 @@ Stuff that, to me, seems unnecessary to add, but if you see a good arguement for
 
 
 These are not exhaustive lists. I have a ton of functions listed out that could theoretically be bound to a controller. If you dig my extension, but feel it really needs X or Y function added, just let me know and I can take a look for a future version.
-

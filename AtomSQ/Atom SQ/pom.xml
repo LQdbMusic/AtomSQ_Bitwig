@@ -53,7 +53,6 @@
 						</goals>
 						<configuration>
 							<sourceFile>${project.build.directory}/${project.build.finalName}.jar</sourceFile>
-							
 							<destinationFile>${project.build.directory}/${project.build.finalName}\extension\AtomSQ.bwextension</destinationFile>
 						</configuration>
 					</execution>
