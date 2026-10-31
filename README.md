@@ -23,7 +23,7 @@ This controller extension provides many functions above and beyond the basic Mid
 3.   LEDs represent Clip-Color
 4.   Cursor Buttons navigate Scene / Clip Frame
 5.   press Clip-Pad start Clip, SHIFT+Clip-Pad stops Clip
-6.   Display: start Scenes 1-4, 5-8
+6.   Display scene buttons follow the visible scene range; playing scenes are shown in green.
 
 7.   Device Remote Parameter (Inst) now shows in Display while tweaking for 1.5sec
 

@@ -1193,6 +1193,20 @@ public class AtomSQExtension extends ControllerExtension
       }
    }
 
+   public boolean isSessionScenePlaying(final int scene)
+   {
+      if (mSessionBank == null || scene < 0 || scene >= SESSION_SCENES) { return false; }
+
+      for (int t = 0; t < mSessionBank.getSizeOfBank(); t++)
+      {
+         if (mSessionBank.getItemAt(t).clipLauncherSlotBank().getItemAt(scene).isPlaying().get())
+         {
+            return true;
+         }
+      }
+      return false;
+   }
+
    private void launchSessionClip(final int key)
    {
       //layout: one scene per group of 8 keys (keys 0-7 = scene 1, tracks 1-8; keys 8-15 = scene 2, ...)

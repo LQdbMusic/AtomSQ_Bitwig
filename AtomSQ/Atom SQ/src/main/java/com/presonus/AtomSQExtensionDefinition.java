@@ -34,7 +34,7 @@ public class AtomSQExtensionDefinition extends ControllerExtensionDefinition
    @Override
    public String getVersion()
    {
-      return "2.1-ext";
+      return "2.2-ext";
    }
 
    @Override

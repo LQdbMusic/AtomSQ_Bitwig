@@ -41,6 +41,9 @@ public class DisplayMode
    private String dPopupBrowsertype;
    private String dDrumMessage;
    private long dDrumMessageUntil;
+   private int dLastSceneStart = -1;
+   private final boolean[] dLastScenePlaying = new boolean[4];
+   private boolean dSessionSceneTitlesInitialized;
 
    public void start(AtomSQExtension Ext)
    {
@@ -127,6 +130,7 @@ public class DisplayMode
       }
 
       else if (dEditLayer.isActive()){
+         updateSessionSceneTitles();
          final int trackStart = dASQCE.mSessionBank.scrollPosition().get() + 1;
          final int sceneStart = dASQCE.mSessionBank.sceneBank().scrollPosition().get() + 1;
          final String line1 = "Session View";
@@ -378,7 +382,7 @@ public void InstEmptyMode ()
       dMidiOut.sendSysex("F0000106221400F7");
 
       //button titles
-      String[] mTitles= drums ? new String[]{"", "", "", "", "", ""} : new String[]{"Stop", "Scene 1", "Scene 2", "Scene 3", "Scene 4", ""};
+      String[] mTitles= drums ? new String[]{"", "", "", "", "", ""} : new String[]{"Stop", "", "", "", "", ""};
       
       for (int i = 0; i < 6; i++) 
       {
@@ -386,12 +390,37 @@ public void InstEmptyMode ()
          byte[] sysex = SysexBuilder.fromHex(sH.sheader).addByte(sH.sButtonsTitle[i]).addHex(sH.yellow).addByte(sH.spc).addString(msg, msg.length()).terminate();
          dMidiOut.sendSysex(sysex);
       }
+      dSessionSceneTitlesInitialized = false;
+      if (!drums) { updateSessionSceneTitles(); }
 
       //line 1
       dMidiOut.sendSysex("F0 00 01 06 22 12 06 00 5B 5B 00 F7");
 
       //Deliberately NO "F0000106221301F7" here: tested on a real Atom SQ, that sysex hands the key LEDs back to the
       //firmware (all keys white, chromatic), so the clip colours sent from the extension would be overridden.
+    }
+
+    private void updateSessionSceneTitles()
+    {
+       final int sceneStart = dASQCE.mSessionBank.sceneBank().scrollPosition().get();
+       for (int scene = 0; scene < dLastScenePlaying.length; scene++)
+       {
+          final boolean playing = dASQCE.isSessionScenePlaying(scene);
+          if (!dSessionSceneTitlesInitialized || dLastSceneStart != sceneStart || dLastScenePlaying[scene] != playing)
+          {
+             final String title = "Scene " + (sceneStart + scene + 1);
+             final byte[] sysex = SysexBuilder.fromHex(sH.sheader)
+                .addByte(sH.sButtonsTitle[scene + 1])
+                .addHex(playing ? sH.green : sH.yellow)
+                .addByte(sH.spc)
+                .addString(title, title.length())
+                .terminate();
+             dMidiOut.sendSysex(sysex);
+          }
+          dLastScenePlaying[scene] = playing;
+       }
+       dLastSceneStart = sceneStart;
+       dSessionSceneTitlesInitialized = true;
     }
 
     public void UserMode ()
