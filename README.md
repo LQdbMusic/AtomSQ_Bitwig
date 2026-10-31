@@ -27,8 +27,8 @@ This controller extension provides many functions above and beyond the basic Mid
 
 7.   Device Remote Parameter (Inst) now shows in Display while tweaking for 1.5sec
 
-## Bitwig API 
-This extension was written using API version 17. but works with current Bitwig 6.x
+## Bitwig API
+This extension uses Bitwig Controller Extension API version 25 and requires a Bitwig version that supports API 25.
 
 ## Bitwig Java Framework
 This extension leverages the framework components (for the controller Layers) provided by Bitwig in their Github repo here: 

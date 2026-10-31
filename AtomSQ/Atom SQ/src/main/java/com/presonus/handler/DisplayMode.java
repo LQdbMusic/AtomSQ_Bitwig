@@ -39,6 +39,8 @@ public class DisplayMode
    private Layer dEditLayer;
    private PopupBrowser dPopupBrowser;
    private String dPopupBrowsertype;
+   private String dDrumMessage;
+   private long dDrumMessageUntil;
 
    public void start(AtomSQExtension Ext)
    {
@@ -58,6 +60,13 @@ public class DisplayMode
       dPopupBrowser = dASQCE.mPopupBrowser;
 
     }
+
+   public void showDrumMessage(final String message)
+   {
+      dDrumMessage = message;
+      dDrumMessageUntil = System.currentTimeMillis() + 1500;
+      dHost.scheduleTask(() -> dHost.requestFlush(), 1550);
+   }
       
    public void updateDisplay ()
    {
@@ -98,10 +107,18 @@ public class DisplayMode
          else
          {
             final int stepStart = dASQCE.getDrumStepPage() * 16 + 1;
-            line1 = displayText(dASQCE.getDrumLaneName());
+            line1 = displayText((dASQCE.isDrumLaneSolo() ? "SOLO " : "") + dASQCE.getDrumLaneName());
             line2 = "Pad " + (dASQCE.getDrumLane() + 1) + "  Step " + stepStart + "-" + (stepStart + 15);
-            final String vel = dASQCE.getVelocityDisplay();
-            if (vel != null) { line2 = vel; }
+            if (dDrumMessage != null && System.currentTimeMillis() < dDrumMessageUntil)
+            {
+               line2 = dDrumMessage;
+            }
+            else
+            {
+               dDrumMessage = null;
+               final String vel = dASQCE.getVelocityDisplay();
+               if (vel != null) { line2 = vel; }
+            }
          }
          byte[] sysexA = SysexBuilder.fromHex(sH.sheader).addByte(sH.MainL1).addHex(sH.yellow).addByte(sH.spc).addString(line1, line1.length()).terminate();
          dMidiOut.sendSysex(sysexA);

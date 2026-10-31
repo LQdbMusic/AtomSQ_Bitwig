@@ -5,6 +5,7 @@ package com.presonus;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.BooleanSupplier;
 
 
@@ -33,6 +34,7 @@ import com.bitwig.extension.controller.api.HardwareButton;
 import com.bitwig.extension.controller.api.HardwareControl;
 import com.bitwig.extension.controller.api.HardwareControlType;
 import com.bitwig.extension.controller.api.HardwareLightVisualState;
+import com.bitwig.extension.controller.api.HardwareSlider;
 import com.bitwig.extension.controller.api.HardwareSurface;
 import com.bitwig.extension.controller.api.IntegerValue;
 import com.bitwig.extension.controller.api.MidiExpressions;
@@ -350,6 +352,16 @@ public class AtomSQExtension extends ControllerExtension
       mUserButton.setLabel("User");
       mAButton = createToggleButton("a", hH.CC_BTN_A, hH.RED);
       mAButton.setLabel("A");
+      mCButton = createToggleButton("c", hH.CC_BTN_C, hH.RED);
+      mCButton.setLabel("C");
+      mDButton = createToggleButton("d", hH.CC_BTN_D, hH.RED);
+      mDButton.setLabel("D");
+      mFButton = createToggleButton("f", hH.CC_BTN_F, hH.RED);
+      mFButton.setLabel("F");
+
+      mVelocityTouchstrip = surface.createHardwareSlider("velocity_touchstrip", 0.5);
+      mVelocityTouchstrip.setAdjustValueMatcher(mMidiIn.createAbsolutePitchBendValueMatcher(15));
+      mVelocityTouchstrip.value().addValueObserver(this::setHeldStepVelocityFromTouchstrip);
 
       //Buttons
       m1Button = createToggleButton("1", hH.CC_BTN_1, hH.ORANGE);
@@ -865,6 +877,7 @@ public class AtomSQExtension extends ControllerExtension
          pad.exists().markInterested();
          pad.color().markInterested();
          pad.name().markInterested();
+         pad.solo().markInterested();
       }
 
       mDrumClip = mCursorTrack.createLauncherCursorClip(DRUM_STEPS, 1);
@@ -898,6 +911,18 @@ public class AtomSQExtension extends ControllerExtension
    {
       final DrumPad pad = mDrumPadBank.getItemAt(mDrumLane);
       return pad.exists().get() ? pad.name().get() : "Pad " + (mDrumLane + 1);
+   }
+
+   public boolean isDrumLaneSolo()
+   {
+      return drumRackAvailable() && mDrumPadBank.getItemAt(mDrumLane).solo().get();
+   }
+
+   private void toggleDrumLaneSolo()
+   {
+      if (!isDrumPage() || !drumRackAvailable()) { return; }
+      mDrumPadBank.getItemAt(mDrumLane).solo().toggle(true);
+      mHost.requestFlush();
    }
 
    //switches between the Session page and the Drum page of the Editor mode
@@ -981,6 +1006,66 @@ public class AtomSQExtension extends ControllerExtension
          mVelTime = System.currentTimeMillis();
       }
       mHost.scheduleTask(() -> mHost.requestFlush(), VELOCITY_DISPLAY_MS + 50);
+   }
+
+   private void setHeldStepVelocityFromTouchstrip(final double normalizedValue)
+   {
+      if (!isDrumPage() || !drumClipAvailable()) { return; }
+      final int velocity = 1 + (int) Math.round(Math.max(0.0, Math.min(1.0, normalizedValue)) * 126.0);
+      final double normalizedVelocity = velocity / 127.0;
+      for (int x = 0; x < DRUM_STEPS; x++)
+      {
+         if (!mStepHeld[x]) { continue; }
+         mStepDeleteOnRelease[x] = false;
+         mDrumVel[x] = normalizedVelocity;
+         mDrumClip.getStep(0, x, 0).setVelocity(normalizedVelocity);
+         mVelStep = x;
+         mVelTime = System.currentTimeMillis();
+      }
+      mHost.scheduleTask(() -> mHost.requestFlush(), VELOCITY_DISPLAY_MS + 50);
+   }
+
+   private void clearDrumLane()
+   {
+      if (!isDrumPage() || !drumClipAvailable()) { return; }
+      mDrumClip.clearStepsAtY(0, 0);
+      for (int x = 0; x < DRUM_STEPS; x++)
+      {
+         mDrumSteps[x] = 0;
+         mStepHeld[x] = false;
+         mStepDeleteOnRelease[x] = false;
+      }
+      DM.showDrumMessage("Steps deleted!");
+      mHost.requestFlush();
+   }
+
+   private void setDrumLaneVelocityToMaximum()
+   {
+      if (!isDrumPage() || !drumClipAvailable()) { return; }
+      for (int x = 0; x < DRUM_STEPS; x++)
+      {
+         final NoteStep step = mDrumClip.getStep(0, x, 0);
+         if (step.state() != NoteStep.State.NoteOn) { continue; }
+         step.setVelocity(1.0);
+         mDrumVel[x] = 1.0;
+      }
+      DM.showDrumMessage("Velocity Max");
+      mHost.requestFlush();
+   }
+
+   private void randomizeDrumLaneVelocities()
+   {
+      if (!isDrumPage() || !drumClipAvailable()) { return; }
+      for (int x = 0; x < DRUM_STEPS; x++)
+      {
+         final NoteStep step = mDrumClip.getStep(0, x, 0);
+         if (step.state() != NoteStep.State.NoteOn) { continue; }
+         final int velocity = ThreadLocalRandom.current().nextInt(20, 101);
+         step.setVelocity(velocity / 127.0);
+         mDrumVel[x] = velocity / 127.0;
+      }
+      DM.showDrumMessage("Velocity Random");
+      mHost.requestFlush();
    }
 
    //used by DisplayMode: text like "Step 4  Vel 87" while a step is held or was just edited, otherwise null
@@ -1442,6 +1527,14 @@ public class AtomSQExtension extends ControllerExtension
       final HardwareActionBindable velInc = mHost.createAction(() -> editStepVelocity(1), () -> "+");
       final HardwareActionBindable velDec = mHost.createAction(() -> editStepVelocity(-1), () -> "-");
       mEditLayer.bind(mEncoders[0], mHost.createRelativeHardwareControlStepTarget(velInc, velDec));
+      mEditLayer.bindPressed(mAButton, () -> clearDrumLane());
+      mEditLayer.bindPressed(mCButton, () -> randomizeDrumLaneVelocities());
+      mEditLayer.bindPressed(mDButton, () -> setDrumLaneVelocityToMaximum());
+      mEditLayer.bindToggle(mFButton, this::toggleDrumLaneSolo,
+         () -> mEditorPage == PAGE_DRUMS && isDrumLaneSolo());
+      mEditLayer.bind(() -> mEditorPage == PAGE_DRUMS, mAButton);
+      mEditLayer.bind(() -> mEditorPage == PAGE_DRUMS, mCButton);
+      mEditLayer.bind(() -> mEditorPage == PAGE_DRUMS, mDButton);
 
       //Display buttons (Session page): 1 stops the visible tracks, 2-5 launch scene 1-4 of the visible page
       mEditLayer.bindPressed(m1Button, () -> { if (mEditorPage == PAGE_SESSION) { stopSessionTracks(); } });
@@ -1742,7 +1835,8 @@ public class AtomSQExtension extends ControllerExtension
    private HardwareSurface mHardwareSurface;
    private HardwareButton mShiftButton, mUpButton, mDownButton, mLeftButton, mRightButton, mForwardButton,
       mBackButton, mClickCountInButton, mRecordSaveButton, mPlayLoopButton, mStopUndoButton, mSongButton,
-      mEditorButton, mInstButton, mUserButton,  mAButton, m1Button, m2Button, m3Button, m4Button, m5Button, m6Button;
+      mEditorButton, mInstButton, mUserButton, mAButton, mCButton, mDButton, mFButton, m1Button, m2Button, m3Button, m4Button, m5Button, m6Button;
+   private HardwareSlider mVelocityTouchstrip;
    private RelativeHardwareKnob[] mEncoders = new RelativeHardwareKnob[9];
    private final Layers mLayers = new Layers(this)
    {
@@ -1789,7 +1883,7 @@ public class AtomSQExtension extends ControllerExtension
    private int mVelStep = -1;
    private long mVelTime = 0;
    private static final long VELOCITY_DISPLAY_MS = 1200;
-   private static final double VELOCITY_STEP = 6.0;
+   private static final double VELOCITY_STEP = 12.0;
    private final Integer[] mKeysDrums = new Integer[128];
    private final HardwareButton[] mKeyButtons = new HardwareButton[KeyColors.KEY_COUNT];
    private final Integer[] mKeysNormal = new Integer[128];

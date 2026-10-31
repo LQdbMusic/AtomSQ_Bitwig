@@ -25,8 +25,12 @@ public class HardwareHandler
     public final  int  CC_RIGHT      =102;
     //shift
     public final  int  CC_SHIFT     =31;
-    //A-H (only A works in Live mode)
-    public final  int  CC_BTN_A     =64;
+    //A-H buttons
+    public final  int  CC_BTN_A     =0;
+    public final  int  CC_BTN_B     =1;
+    public final  int  CC_BTN_C     =2;
+    public final  int  CC_BTN_D     =3;
+    public final  int  CC_BTN_F     =5;
     //public final  int  CHAN_1 = 176;
     //public final  int  CHAN_2 = 177;
     //Display Buttons, top to bottom, left to right
